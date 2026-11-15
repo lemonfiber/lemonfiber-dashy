@@ -1,16 +1,27 @@
 --- a/services/utils/request.js
 +++ b/services/utils/request.js
-@@ -12,7 +12,41 @@
+@@ -12,6 +12,51 @@
  const https = require('https');
  const zlib = require('zlib');
  const { URL } = require('url');
 +const fs = require('fs');
 +const path = require('path');
 +const yaml = require('./yaml');
- 
++
 +const PAGE = path.resolve(__dirname, '..', '..', process.env.USER_DATA_DIR || 'user-data', 'conf.yml');
 +
 +const STATUS_PAGE_WIDGET = 'uptime-kuma-status-page';
++
++const NOT_SERVICES = new Set([
++  'localhost', 'ip6-localhost', 'ip6-loopback', 'ip6-localnet', 'ip6-mcastprefix',
++  'ip6-allnodes', 'ip6-allrouters', 'metadata', 'instance-data', 'kubernetes',
++]);
++
++const CONTAINER_ID = /^(?:[0-9a-f]{12}|[0-9a-f]{64})$/;
++
++const STACK_SERVICE = /^(?=[a-z0-9-]*[a-z])[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
++
++const stackService = (name) => STACK_SERVICE.test(name) && !NOT_SERVICES.has(name) && !CONTAINER_ID.test(name);
 +
 +const hrefOf = (raw) => {
 +  try { return new URL(raw).href; } catch (e) { return null; }
@@ -36,31 +47,30 @@
 +      }
 +    });
 +  });
-+  return new Set(named.map(hrefOf).filter(Boolean));
++  return new Set(named.map(hrefOf).filter((href) => href && stackService(new URL(href).hostname)));
 +};
-+
+ 
  // List of hosts to disallow by default, for cloud instances
  // Covers AWS, Azure, GCP, DO, Hetzner, Oracle, etc on IPv4/6
- const BLOCKED_HOSTS = new Set([
-@@ -49,6 +83,17 @@
-     };
-   }
+@@ -51,6 +96,17 @@
    return { ok: true };
-+};
-+
+ };
+ 
 +const validateNamedUrl = (raw, asked) => {
 +  const verdict = validateTargetUrl(raw);
 +  if (!verdict.ok) return verdict;
-+  const named = namedByThePage();
 +  const href = hrefOf(raw);
-+  const first = hrefOf(asked || raw);
-+  if (named.has(href)) return { ok: true };
-+  if (named.has(first) && new URL(first).origin === new URL(href).origin) return { ok: true };
++  if (asked !== undefined && hrefOf(asked) !== href) {
++    return { ok: false, status: 403, error: 'A redirect is not followed' };
++  }
++  if (namedByThePage().has(href)) return { ok: true };
 +  return { ok: false, status: 403, error: 'Target-URL is not an address this dashboard names' };
- };
- 
++};
++
  class RequestError extends Error {
-@@ -117,7 +162,7 @@
+   constructor(message, {
+     response, code, errno, timeout,
+@@ -117,7 +173,7 @@
  
        // Re-apply the host policy on every hop, so redirects can't reach a blocked host
        if (validateUrl) {
@@ -69,7 +79,7 @@
          if (verdict && verdict.ok === false) {
            reject(new RequestError(verdict.error, { code: 'EBLOCKED' }));
            return;
-@@ -289,4 +334,4 @@
+@@ -289,4 +345,4 @@
  
  module.exports = request;
  module.exports.RequestError = RequestError;
