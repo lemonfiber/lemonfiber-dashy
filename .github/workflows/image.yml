@@ -1,0 +1,27 @@
+# The image plugin-dashy runs as its upstream, from spec's first-party-image workflow (OPS-R93):
+# built and run under the posture plugin-dashy's manifest declares on a pull request, and
+# published, run again and pinned in plugin-dashy by its rolling pull request from main
+# (OPS-R90, OPS-R91, ARCH-R250).
+name: image
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+jobs:
+  image:
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: lemonfiber/spec/.github/workflows/first-party-image.yml@c0fa21b081b24ecf98d855c2d14e07f562ffcd4b # v1.0.153
+    with:
+      pinned_in: plugin-dashy
+    secrets:
+      RELEASE_APP_KEY: ${{ secrets.RELEASE_APP_KEY }}
