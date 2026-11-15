@@ -1,0 +1,119 @@
+--- a/services/utils/request.js
++++ b/services/utils/request.js
+@@ -12,7 +12,41 @@
+ const https = require('https');
+ const zlib = require('zlib');
+ const { URL } = require('url');
++const fs = require('fs');
++const path = require('path');
++const yaml = require('./yaml');
+ 
++const PAGE = path.resolve(__dirname, '..', '..', process.env.USER_DATA_DIR || 'user-data', 'conf.yml');
++
++const STATUS_PAGE_WIDGET = 'uptime-kuma-status-page';
++
++const hrefOf = (raw) => {
++  try { return new URL(raw).href; } catch (e) { return null; }
++};
++
++const listOf = (value) => (Array.isArray(value) ? value : []);
++
++const namedByThePage = () => {
++  let page;
++  try { page = yaml.load(fs.readFileSync(PAGE, 'utf8')) || {}; } catch (e) { return new Set(); }
++  const everyItem = Boolean(page.appConfig && page.appConfig.statusCheck);
++  const named = [];
++  listOf(page.sections).forEach((section) => {
++    listOf(section && section.items).forEach((item) => {
++      const checked = item && (item.statusCheck === undefined ? everyItem : item.statusCheck);
++      if (checked) named.push(item.statusCheckUrl || item.url);
++    });
++    listOf(section && section.widgets).forEach((widget) => {
++      const options = (widget && widget.options) || {};
++      if (widget && widget.type === STATUS_PAGE_WIDGET && options.host && options.slug) {
++        named.push(`${options.host}/api/status-page/heartbeat/${options.slug}`);
++        named.push(`${options.host}/api/status-page/${options.slug}`);
++      }
++    });
++  });
++  return new Set(named.map(hrefOf).filter(Boolean));
++};
++
+ // List of hosts to disallow by default, for cloud instances
+ // Covers AWS, Azure, GCP, DO, Hetzner, Oracle, etc on IPv4/6
+ const BLOCKED_HOSTS = new Set([
+@@ -49,6 +83,17 @@
+     };
+   }
+   return { ok: true };
++};
++
++const validateNamedUrl = (raw, asked) => {
++  const verdict = validateTargetUrl(raw);
++  if (!verdict.ok) return verdict;
++  const named = namedByThePage();
++  const href = hrefOf(raw);
++  const first = hrefOf(asked || raw);
++  if (named.has(href)) return { ok: true };
++  if (named.has(first) && new URL(first).origin === new URL(href).origin) return { ok: true };
++  return { ok: false, status: 403, error: 'Target-URL is not an address this dashboard names' };
+ };
+ 
+ class RequestError extends Error {
+@@ -117,7 +162,7 @@
+ 
+       // Re-apply the host policy on every hop, so redirects can't reach a blocked host
+       if (validateUrl) {
+-        const verdict = validateUrl(targetUrl);
++        const verdict = validateUrl(targetUrl, url);
+         if (verdict && verdict.ok === false) {
+           reject(new RequestError(verdict.error, { code: 'EBLOCKED' }));
+           return;
+@@ -289,4 +334,4 @@
+ 
+ module.exports = request;
+ module.exports.RequestError = RequestError;
+-module.exports.validateTargetUrl = validateTargetUrl;
++module.exports.validateTargetUrl = validateNamedUrl;
+--- a/services/endpoints/ping-check.js
++++ b/services/endpoints/ping-check.js
+@@ -24,38 +24,6 @@
+   }));
+ };
+ 
+-/* Main function, will check if a URL present, and call function */
+ module.exports = (paramStr, render) => {
+-  if (!paramStr || !paramStr.includes('=')) {
+-    immediateError(render);
+-  } else {
+-    // Get the url to check from query params
+-    const params = new URLSearchParams(paramStr.slice(paramStr.indexOf('?') + 1));
+-    const host = params.get('host') || '';
+-    const count = boundedParam(params.get('count'), 2, MAX_COUNT);
+-    const timeout = boundedParam(params.get('timeout'), 2000, count * 1000);
+-    if (!host || typeof host !== 'string') {
+-      immediateError(render, 'Invalid host given for ping check.');
+-      return;
+-    }
+-    (async () => {
+-      try {
+-        const configuration = {
+-          timeout: Math.max(1, Math.round(timeout / 1000)),
+-          numberOfEchos: count,
+-          IPV4: net.isIPv4(host),
+-          IPV6: net.isIPv6(host),
+-        };
+-        const response = await ping(host, configuration);
+-        const results = {
+-          successStatus: response.alive,
+-          message: `${response.host} ${response.numericHost == response.host ? '' : `(${response.numericHost}) `} is ${response.alive ? `UP (${response.avg} ms)` : 'DOWN'}`,
+-          timeTaken: response.time,
+-        };
+-        render(JSON.stringify(results));
+-      } catch (error) {
+-        immediateError(render, 'Ping check failed : ' + (error.message || 'Unknown error'));
+-      }
+-    })();
+-  }
++  immediateError(render, 'This dashboard pings nothing.');
+ };
