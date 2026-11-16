@@ -5,12 +5,15 @@ stack: Dashy, with its server's outbound endpoints held to the addresses its pag
 Dashy's own image answers anybody who reaches the page: `/cors-proxy` forwards any request
 to any address, and `/status-check` and `/ping-check` reach any host. On a page the
 household reaches without signing in, that would be a way into every service on the
-stack's internal network. Here `/cors-proxy` and `/status-check` reach only an address the
-page names, each entry's status check and each status-page widget's two addresses, on a
-host that is one label of a service's name on the stack's network: never a name the
-container's own hosts file holds (`localhost`, `ip6-localhost` and the other `ip6-` names),
-a container's id, or a metadata or cluster name a host's search domains complete
-(`metadata`, `instance-data`, `kubernetes`). They follow no redirect. `/ping-check` refuses every host.
+stack's internal network. Here `/status-check` asks only an entry's status check the page
+names, with none of the headers, certificate skipping or accepted statuses a caller sends,
+and `/cors-proxy` forwards only a plain GET to one of a status-page widget's two addresses
+the page names, with none of the caller's headers or body and no cross-origin answer.
+Each address is on a host that is one label of a service's name on the stack's network:
+never a name the container's own hosts file holds (`localhost`, `ip6-localhost` and the
+other `ip6-` names), a container's id, or a metadata or cluster name a host's search
+domains complete (`metadata`, `instance-data`, `kubernetes`). Neither follows a redirect.
+`/ping-check` refuses every host.
 
 This repository builds `ghcr.io/lemonfiber/dashy`. You do not run it yourself:
 [`plugin-dashy`](https://github.com/lemonfiber/plugin-dashy) runs it as the upstream its
