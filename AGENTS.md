@@ -15,12 +15,15 @@ as its upstream (`OPS-R93`). See the spec:
 
 ## The rules you cannot break
 
-- **Dashy's server reaches only what its page names.** `dashy.patch` holds `/cors-proxy`
-  and `/status-check` to each entry's status check and each status-page widget's two
-  addresses in `conf.yml`, read on every request, each on a host that is one label of a
-  service's name (never an IP address, a dotted name, a name the container's hosts file
-  holds, a container's id, or `metadata`, `instance-data` or `kubernetes`), and they
-  follow no redirect. `/ping-check` refuses every host. Nothing here widens that.
+- **Dashy's server reaches only what its page names.** `dashy.patch` holds
+  `/status-check` to each entry's status check in `conf.yml` and `/cors-proxy` to each
+  status-page widget's two addresses there, read on every request, each on a host that
+  is one label of a service's name (never an IP address, a dotted name, a name the
+  container's hosts file holds, a container's id, or `metadata`, `instance-data` or
+  `kubernetes`). `/status-check` takes no caller's headers, certificate skipping,
+  accepted statuses or redirect count; `/cors-proxy` forwards a GET alone, with no
+  caller's headers or body and no `Access-Control-Allow-*` answer. Neither follows a
+  redirect, and `/ping-check` refuses every host. Nothing here widens that.
 - **The patch is applied with `patch --forward` in a build stage.** A Dashy bump whose
   code the patch no longer fits fails the build: refresh the patch against the new
   release's files, never loosen the apply.

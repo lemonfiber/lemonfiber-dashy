@@ -1,13 +1,13 @@
 --- a/services/utils/request.js
 +++ b/services/utils/request.js
-@@ -12,6 +12,51 @@
+@@ -12,7 +12,56 @@
  const https = require('https');
  const zlib = require('zlib');
  const { URL } = require('url');
 +const fs = require('fs');
 +const path = require('path');
 +const yaml = require('./yaml');
-+
+ 
 +const PAGE = path.resolve(__dirname, '..', '..', process.env.USER_DATA_DIR || 'user-data', 'conf.yml');
 +
 +const STATUS_PAGE_WIDGET = 'uptime-kuma-status-page';
@@ -29,48 +29,62 @@
 +
 +const listOf = (value) => (Array.isArray(value) ? value : []);
 +
++const onTheStack = (named) => new Set(named.map(hrefOf)
++  .filter((href) => href && stackService(new URL(href).hostname)));
++
 +const namedByThePage = () => {
 +  let page;
-+  try { page = yaml.load(fs.readFileSync(PAGE, 'utf8')) || {}; } catch (e) { return new Set(); }
-+  const everyItem = Boolean(page.appConfig && page.appConfig.statusCheck);
-+  const named = [];
-+  listOf(page.sections).forEach((section) => {
++  try { page = yaml.load(fs.readFileSync(PAGE, 'utf8')) || {}; } catch (e) { page = {}; }
++  const everyItem = Boolean(page && page.appConfig && page.appConfig.statusCheck);
++  const checks = [];
++  const widgets = [];
++  listOf(page && page.sections).forEach((section) => {
 +    listOf(section && section.items).forEach((item) => {
 +      const checked = item && (item.statusCheck === undefined ? everyItem : item.statusCheck);
-+      if (checked) named.push(item.statusCheckUrl || item.url);
++      if (checked) checks.push(item.statusCheckUrl || item.url);
 +    });
 +    listOf(section && section.widgets).forEach((widget) => {
 +      const options = (widget && widget.options) || {};
 +      if (widget && widget.type === STATUS_PAGE_WIDGET && options.host && options.slug) {
-+        named.push(`${options.host}/api/status-page/heartbeat/${options.slug}`);
-+        named.push(`${options.host}/api/status-page/${options.slug}`);
++        widgets.push(`${options.host}/api/status-page/heartbeat/${options.slug}`);
++        widgets.push(`${options.host}/api/status-page/${options.slug}`);
 +      }
 +    });
 +  });
-+  return new Set(named.map(hrefOf).filter((href) => href && stackService(new URL(href).hostname)));
++  return { checks: onTheStack(checks), widgets: onTheStack(widgets) };
 +};
- 
++
  // List of hosts to disallow by default, for cloud instances
  // Covers AWS, Azure, GCP, DO, Hetzner, Oracle, etc on IPv4/6
-@@ -51,6 +96,17 @@
+ const BLOCKED_HOSTS = new Set([
+@@ -49,8 +98,26 @@
+     };
+   }
    return { ok: true };
- };
- 
-+const validateNamedUrl = (raw, asked) => {
++};
++
++const validateNamed = (kinds) => (raw, asked) => {
 +  const verdict = validateTargetUrl(raw);
 +  if (!verdict.ok) return verdict;
 +  const href = hrefOf(raw);
 +  if (asked !== undefined && hrefOf(asked) !== href) {
 +    return { ok: false, status: 403, error: 'A redirect is not followed' };
 +  }
-+  if (namedByThePage().has(href)) return { ok: true };
++  const named = namedByThePage();
++  if (kinds.some((kind) => named[kind].has(href))) return { ok: true };
 +  return { ok: false, status: 403, error: 'Target-URL is not an address this dashboard names' };
-+};
+ };
+ 
++const validateCheckUrl = validateNamed(['checks']);
++
++const validateWidgetUrl = validateNamed(['widgets']);
++
++const validateNamedUrl = validateNamed(['checks', 'widgets']);
 +
  class RequestError extends Error {
    constructor(message, {
      response, code, errno, timeout,
-@@ -117,7 +173,7 @@
+@@ -117,7 +184,7 @@
  
        // Re-apply the host policy on every hop, so redirects can't reach a blocked host
        if (validateUrl) {
@@ -79,12 +93,14 @@
          if (verdict && verdict.ok === false) {
            reject(new RequestError(verdict.error, { code: 'EBLOCKED' }));
            return;
-@@ -289,4 +345,4 @@
+@@ -289,4 +356,6 @@
  
  module.exports = request;
  module.exports.RequestError = RequestError;
 -module.exports.validateTargetUrl = validateTargetUrl;
 +module.exports.validateTargetUrl = validateNamedUrl;
++module.exports.validateCheckUrl = validateCheckUrl;
++module.exports.validateWidgetUrl = validateWidgetUrl;
 --- a/services/endpoints/ping-check.js
 +++ b/services/endpoints/ping-check.js
 @@ -24,38 +24,6 @@
@@ -127,3 +143,121 @@
 -  }
 +  immediateError(render, 'This dashboard pings nothing.');
  };
+--- a/services/endpoints/status-check.js
++++ b/services/endpoints/status-check.js
+@@ -5,7 +5,7 @@
+  */
+ const request = require('../utils/request');
+ 
+-const { validateTargetUrl } = request;
++const { validateCheckUrl } = request;
+ 
+ /* Determines if successful from the HTTP response code */
+ const getResponseType = (code, validCodes) => {
+@@ -42,7 +42,7 @@
+     timeout: 10000,
+     ignoreResponseBody: true,
+     httpsAgent: { rejectUnauthorized: !enableInsecure },
+-    validateUrl: validateTargetUrl,
++    validateUrl: validateCheckUrl,
+   })
+     .then((response) => {
+       const statusCode = response.status;
+@@ -106,16 +106,12 @@
+     // Read the query params from req.url, ignoring its leading path and '?'
+     const params = new URLSearchParams(paramStr.slice(paramStr.indexOf('?') + 1));
+     const url = params.get('url') || '';
+-    const acceptCodes = params.get('acceptCodes');
+-    const maxRedirects = Number(params.get('maxRedirects')) || 5;
+-    const headers = decodeHeaders(params.get('headers'));
+-    const enableInsecure = !!params.get('enableInsecure');
+     if (!url || url === 'undefined') {
+       immediateError(render);
+       return;
+     }
+     const options = {
+-      headers, enableInsecure, acceptCodes, maxRedirects,
++      headers: {}, enableInsecure: false, acceptCodes: null, maxRedirects: 5,
+     };
+     makeRequest(url, options, render);
+   }
+--- a/services/endpoints/cors-proxy.js
++++ b/services/endpoints/cors-proxy.js
+@@ -5,7 +5,7 @@
+  */
+ 
+ const request = require('../utils/request');
+-const { validateTargetUrl } = request;
++const { validateWidgetUrl } = request;
+ 
+ // If reference to env var is present, substitute for env var value if set
+ const PLACEHOLDER_RE = /\b(?:DASHY_|VITE_APP_|VUE_APP_)\w+/g;
+@@ -32,60 +32,31 @@
+ };
+ 
+ const handler = (req, res) => {
+-  // Apply allow-all response headers
+-  res.header('Access-Control-Allow-Origin', '*');
+-  res.header('Access-Control-Allow-Methods', 'GET, PUT, PATCH, POST, DELETE');
+-  if (req.header('access-control-request-headers')) {
+-    res.header('Access-Control-Allow-Headers', req.header('access-control-request-headers'));
+-  }
+-
+-  // Pre-flight
+-  if (req.method === 'OPTIONS') {
+-    res.send();
++  if (req.method !== 'GET') {
++    res.status(405).send({ error: 'Only a GET is forwarded' });
+     return;
+   }
+ 
+-  // Get desired URL, resolve env-var placeholders, then validate against the policy.
+-  const rawTargetURL = req.header('Target-URL');
+-  if (!rawTargetURL) {
++  const targetURL = req.header('Target-URL');
++  if (!targetURL) {
+     res.status(400).send({ error: 'Missing required Target-URL header' });
+     return;
+   }
+-  const targetURL = substituteEnv(rawTargetURL);
+-  const validation = validateTargetUrl(targetURL);
++  const validation = validateWidgetUrl(targetURL);
+   if (!validation.ok) {
+     res.status(validation.status).send({ error: validation.error });
+     return;
+   }
+ 
+-  // Apply any custom headers, if needed
+-  let headers = {};
+-  const rawCustomHeaders = req.header('CustomHeaders');
+-  if (rawCustomHeaders) {
+-    try {
+-      headers = substituteEnv(JSON.parse(rawCustomHeaders));
+-    } catch (e) {
+-      res.status(400).send({ error: 'CustomHeaders header contains malformed JSON' });
+-      return;
+-    }
+-  }
+-
+-  // Prepare the request
+   const requestConfig = {
+-    method: req.method,
++    method: 'GET',
+     url: targetURL,
+-    data: substituteEnv(req.body),
+-    headers,
++    headers: {},
+     timeout: 30000,
+     maxResponseSize: 10 * 1024 * 1024, // 10 MB
+-    validateUrl: validateTargetUrl,
++    validateUrl: validateWidgetUrl,
+   };
+ 
+-  // Opt-in to skipping TLS verification, for targets with a self-signed or mismatched cert
+-  if (req.header('Allow-Insecure') === 'true') {
+-    requestConfig.httpsAgent = { rejectUnauthorized: false };
+-  }
+-
+   // Make the request, and respond with result
+   const send = (status, body) => {
+     if (res.headersSent) return;
